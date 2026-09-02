@@ -367,7 +367,7 @@ let configActiveTab = 'config';
 
 // Map UI camelCase keys ↔ DB snake_case columns
 const CONFIG_DB_MAP = {
-  threshold: 'threshold',
+  allowAppCamera: 'allow_app_camera',
   validate: 'validate',
   mulaiPengumpulan: 'mulai_pengumpulan',
   batasPengumpulan: 'batas_pengumpulan_absensi',
@@ -405,7 +405,7 @@ async function loadConfigValues() {
     if (!data) throw new Error("Config not found");
 
     configCache = {
-  threshold: data.threshold,
+  allowAppCamera: data.allow_app_camera,
   validate: data.validate,
   mulaiPengumpulan: data.mulai_pengumpulan,
   batasPengumpulan: data.batas_pengumpulan_absensi,
@@ -456,13 +456,13 @@ function renderConfigMenu() {
     title: "Jendela Upload Bukti Absensi (Pembina)",
     items: [
       { key: "mulaiPengumpulan", label: "Mulai Pengumpulan", type: "time" },
-      { key: "batasPengumpulan", label: "Batas Pengumpulan Absensi", type: "time" }
+      { key: "batasPengumpulan", label: "Batas Pengumpulan Absensi", type: "time" },
+      { key: "allowAppCamera", label: "Izinkan pembina pakai kamera aplikasi", type: "toggle" }
     ]
   },
   {
     title: "Konfigurasi sistem",
     items: [
-      { key: "threshold", label: "Akurasi Face ID", type: "slider", min: 0.1, max: 1.0, step: 0.05 },
       { key: "dendaAlpha", label: "Denda alpha", type: "money" },
       { key: "dendaTerlambat", label: "Denda terlambat/pagi", type: "money" },
       { key: "nilaiMinusAlpha", label: "Nilai minus (Alpha)", type: "negative" },
@@ -1786,6 +1786,8 @@ let adminInputCurrentEkstra = null;
 let adminProofCurrentDate = null;
 let adminProofCache = {};
 let adminProofLoadToken = 0;
+let adminProofPhotos = [];   // all pages/lembar for the current ekstra+date+semester
+let adminProofPhotoIndex = 0;
 
 async function loadAdminProofPhoto(ekstra, date) {
   adminInputCurrentEkstra = ekstra;
@@ -1800,10 +1802,14 @@ async function loadAdminProofPhoto(ekstra, date) {
   const ekstraLabel = document.getElementById('adminPhotoEkstraLabel');
   if (ekstraLabel) ekstraLabel.textContent = ekstra || '';
 
+  adminProofPhotos = [];
+  adminProofPhotoIndex = 0;
+
   if (!ekstra) {
     if (img) img.style.display = 'none';
     if (emptyEl) emptyEl.style.display = 'flex';
     if (emptyText) emptyText.textContent = 'Pilih ekskul untuk melihat foto';
+    updateAdminPhotoPageBar();
     return;
   }
 
@@ -1813,46 +1819,90 @@ async function loadAdminProofPhoto(ekstra, date) {
   if (img) img.style.display = 'none';
   if (emptyEl) emptyEl.style.display = 'flex';
   if (emptyText) emptyText.textContent = 'Memuat foto...';
+  updateAdminPhotoPageBar();
 
-  let proof = adminProofCache[cacheKey];
-  if (proof === undefined) {
+  let proofs = adminProofCache[cacheKey];
+  if (proofs === undefined) {
     try {
       const { data, error } = await sb
         .from('AttendanceProof')
-        .select('photo_url, uploaded_by, uploaded_at')
+        .select('photo_url, uploaded_by, uploaded_at, page')
         .eq('ekstra', ekstra).eq('date', date).eq('semester', currentSemester)
-        .maybeSingle();
+        .order('page', { ascending: true });
       if (error) throw error;
-      proof = data || null;
+      proofs = data || [];
     } catch (e) {
-      proof = null;
+      proofs = [];
     }
-    adminProofCache[cacheKey] = proof;
+    adminProofCache[cacheKey] = proofs;
   }
 
   if (token !== adminProofLoadToken) return; // superseded by a newer request
 
-  if (!proof) {
+  adminProofPhotos = proofs;
+  adminProofPhotoIndex = 0;
+  updateAdminPhotoPageBar();
+
+  if (!proofs.length) {
     if (emptyText) emptyText.textContent = 'Pembina belum upload foto di sistem';
     if (emptyEl) emptyEl.style.display = 'flex';
     if (img) img.style.display = 'none';
     return;
   }
 
-  if (img) {
-    img.onload = () => {
-      if (token !== adminProofLoadToken) return;
-      if (emptyEl) emptyEl.style.display = 'none';
-      img.style.display = 'block';
-    };
-    img.onerror = () => {
-      if (token !== adminProofLoadToken) return;
-      if (emptyText) emptyText.textContent = 'Gagal memuat gambar';
-      if (emptyEl) emptyEl.style.display = 'flex';
-      img.style.display = 'none';
-    };
-    img.src = proof.photo_url;
+  renderAdminProofPhoto(token);
+}
+
+function renderAdminProofPhoto(token) {
+  const img = document.getElementById('adminPhotoImg');
+  const emptyEl = document.getElementById('adminPhotoEmptyState');
+  const emptyText = document.getElementById('adminPhotoEmptyText');
+  const proof = adminProofPhotos[adminProofPhotoIndex];
+  if (!proof || !img) return;
+
+  adminPhotoZoomReset();
+  if (emptyEl) emptyEl.style.display = 'flex';
+  if (emptyText) emptyText.textContent = 'Memuat foto...';
+  img.style.display = 'none';
+
+  img.onload = () => {
+    if (token !== undefined && token !== adminProofLoadToken) return;
+    if (emptyEl) emptyEl.style.display = 'none';
+    img.style.display = 'block';
+  };
+  img.onerror = () => {
+    if (token !== undefined && token !== adminProofLoadToken) return;
+    if (emptyText) emptyText.textContent = 'Gagal memuat gambar';
+    if (emptyEl) emptyEl.style.display = 'flex';
+    img.style.display = 'none';
+  };
+  img.src = proof.photo_url;
+}
+
+function updateAdminPhotoPageBar() {
+  const bar = document.getElementById('adminPhotoPageBar');
+  const label = document.getElementById('adminPhotoPageLabel');
+  const prevBtn = document.getElementById('adminPhotoPagePrevBtn');
+  const nextBtn = document.getElementById('adminPhotoPageNextBtn');
+  if (!bar) return;
+
+  if (adminProofPhotos.length <= 1) {
+    bar.style.display = 'none';
+    return;
   }
+
+  bar.style.display = 'flex';
+  if (label) label.textContent = `Lembar ${adminProofPhotoIndex + 1}/${adminProofPhotos.length}`;
+  if (prevBtn) prevBtn.disabled = adminProofPhotoIndex <= 0;
+  if (nextBtn) nextBtn.disabled = adminProofPhotoIndex >= adminProofPhotos.length - 1;
+}
+
+function adminPhotoShiftPage(delta) {
+  const next = adminProofPhotoIndex + delta;
+  if (next < 0 || next >= adminProofPhotos.length) return;
+  adminProofPhotoIndex = next;
+  updateAdminPhotoPageBar();
+  renderAdminProofPhoto(adminProofLoadToken);
 }
 
 function updateAdminPhotoDateLabel() {
@@ -2096,7 +2146,13 @@ function backProofViewer() {
     resetProofViewer();
     loadProofDates();
   } else {
-    backToKelolaAbsensi();
+    // If opened from Tatib, return to Tatib screen instead of Admin
+    if (typeof isTatib !== 'undefined' && isTatib) {
+      hideAllScreens();
+      showTatibScreen();
+    } else {
+      backToKelolaAbsensi();
+    }
   }
 }
 
@@ -2176,14 +2232,16 @@ async function selectProofDate(date) {
     
     const { data: proofs, error: pErr } = await sb
       .from('AttendanceProof')
-      .select('ekstra, photo_url, uploaded_by, uploaded_at')
+      .select('ekstra, photo_url, uploaded_by, uploaded_at, page')
       .eq('date', date)
-      .eq('semester', currentSemester);
+      .eq('semester', currentSemester)
+      .order('page', { ascending: true });
     if (pErr) throw pErr;
     
     proofViewerProofMap = {};
     (proofs || []).forEach(p => {
-      proofViewerProofMap[p.ekstra] = p;
+      if (!proofViewerProofMap[p.ekstra]) proofViewerProofMap[p.ekstra] = [];
+      proofViewerProofMap[p.ekstra].push(p);
     });
     
     renderProofEkstraList();
@@ -2207,13 +2265,16 @@ function renderProofEkstraList() {
   }
   
   container.innerHTML = proofViewerEkstraList.map(ekstra => {
-    const proof = proofViewerProofMap[ekstra];
-    const hasPhoto = !!proof;
+    const proofs = proofViewerProofMap[ekstra];
+    const hasPhoto = !!(proofs && proofs.length);
+    const metaText = hasPhoto
+      ? (proofs.length > 1 ? `${proofs.length} lembar tersedia` : 'Foto tersedia')
+      : 'Belum ada foto';
     return `
       <div class="proof-ekstra-item" onclick="selectProofEkstra('${escapeHtml(ekstra)}')">
         <div class="proof-ekstra-info">
           <div class="proof-ekstra-name">${escapeHtml(ekstra)}</div>
-          <div class="proof-ekstra-meta">${hasPhoto ? 'Foto tersedia' : 'Belum ada foto'}</div>
+          <div class="proof-ekstra-meta">${metaText}</div>
         </div>
         <div class="proof-ekstra-badge ${hasPhoto ? 'has' : 'missing'}">
           ${hasPhoto ? '✓' : '✗'}
@@ -2225,7 +2286,7 @@ function renderProofEkstraList() {
 
 function selectProofEkstra(ekstra) {
   proofViewerCurrentEkstra = ekstra;
-  const proof = proofViewerProofMap[ekstra];
+  const proofs = proofViewerProofMap[ekstra];
   
   document.getElementById('proofDateListView').style.display = 'none';
   document.getElementById('proofEkstraListView').style.display = 'none';
@@ -2235,7 +2296,7 @@ function selectProofEkstra(ekstra) {
   const container = document.getElementById('proofPhotoContent');
   if (!container) return;
   
-  if (!proof) {
+  if (!proofs || !proofs.length) {
     container.innerHTML = `
       <div class="proof-empty">
         <div class="proof-empty-icon">⚠️</div>
@@ -2246,19 +2307,19 @@ function selectProofEkstra(ekstra) {
     return;
   }
   
-  const uploadedAt = proof.uploaded_at 
-    ? new Date(proof.uploaded_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })
-    : '-';
-  
-  container.innerHTML = `
-    <div class="proof-photo-card" onclick="window.open('${escapeHtml(proof.photo_url)}','_blank')">
+  container.innerHTML = proofs.map((proof, i) => {
+    const uploadedAt = proof.uploaded_at
+      ? new Date(proof.uploaded_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })
+      : '-';
+    return `
+    <div class="proof-photo-card" style="${i > 0 ? 'margin-top:16px;' : ''}" onclick="window.open('${escapeHtml(proof.photo_url)}','_blank')">
       <div class="proof-photo-frame">
-        <img src="${escapeHtml(proof.photo_url)}" alt="Bukti absensi" onerror="this.parentElement.innerHTML='<div class=\\'proof-photo-error\\'>Gagal memuat gambar</div>'">
+        <img src="${escapeHtml(proof.photo_url)}" alt="Bukti absensi lembar ${proof.page || i + 1}" onerror="this.parentElement.innerHTML='<div class=\\'proof-photo-error\\'>Gagal memuat gambar</div>'">
       </div>
       <div class="proof-photo-meta">
         <div class="proof-meta-row">
-          <span class="proof-meta-label">Tanggal</span>
-          <span class="proof-meta-value">${escapeHtml(proof.date)}</span>
+          <span class="proof-meta-label">Lembar</span>
+          <span class="proof-meta-value">${proof.page || i + 1} / ${proofs.length}</span>
         </div>
         <div class="proof-meta-row">
           <span class="proof-meta-label">Diupload oleh</span>
@@ -2268,14 +2329,10 @@ function selectProofEkstra(ekstra) {
           <span class="proof-meta-label">Waktu upload</span>
           <span class="proof-meta-value">${uploadedAt}</span>
         </div>
-        <div class="proof-meta-row">
-          <span class="proof-meta-label">Semester</span>
-          <span class="proof-meta-value">${escapeHtml(proof.semester)}</span>
-        </div>
       </div>
-      <div class="proof-photo-hint">Klik gambar untuk membuka di tab baru</div>
     </div>
   `;
+  }).join('') + `<div class="proof-photo-hint">Klik gambar untuk membuka di tab baru</div>`;
 }
 
 function showProofEkstraList() {

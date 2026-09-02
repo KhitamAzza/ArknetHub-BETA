@@ -9,6 +9,8 @@ let paperStudents = [];
 let paperCapturedImage = null;
 let paperVideoStream = null;
 let paperCameraFacing = 'environment';
+let paperSourceMode = null; // 'camera' | 'file'
+let paperAllowAppCamera = true; // from Config.allow_app_camera
 
 /* ===== SCREEN NAVIGATION ===== */
 function showPaperScreen() {
@@ -22,13 +24,32 @@ function showPaperScreen() {
 
 function backToDashboardFromPaper() {
   stopPaperCamera();
+  paperSourceMode = null;
+  paperCapturedImage = null;
+  
+  const fileInput = document.getElementById('paperFileInput');
+  if (fileInput) fileInput.value = '';
+  
   hideAllScreens();
   showDashboard();
 }
+async function loadPaperCameraConfig() {
+  try {
+    const { data, error } = await sb
+      .from('Config')
+      .select('allow_app_camera')
+      .single();
+    if (error) throw error;
+    paperAllowAppCamera = data?.allow_app_camera !== false; // default true if null/undefined
+  } catch (e) {
+    paperAllowAppCamera = true; // fail open so upload is never blocked by a config error
+  }
+}
 
 async function initPaperScreen() {
-  await loadPaperStudents();
+  await Promise.all([loadPaperStudents(), loadPaperCameraConfig()]);
   renderPaperPrint();
+  await syncPaperUploadCounters();
 
   const btnPrint = document.getElementById('paperTabPrint');
   const titleEl = document.querySelector('#paperScreen .operator-name');
@@ -74,12 +95,14 @@ function switchPaperTab(tab) {
   if (btnPrint) btnPrint.classList.toggle('active', tab === 'print');
   if (btnCam)   btnCam.classList.toggle('active', tab === 'camera');
   if (secPrint) secPrint.style.display = tab === 'print' ? 'block' : 'none';
-  if (secCam)   secCam.style.display = tab === 'camera' ? 'block' : 'none';
+  if (secCam)   secCam.style.display = tab === 'camera' ? 'flex' : 'none';
   
-  if (tab === 'camera') startPaperCamera();
-  else stopPaperCamera();
+  if (tab === 'camera') {
+    showPaperSourceSelect();
+  } else {
+    stopPaperCamera();
+  }
 }
-
 /* ===== PRINT SECTION ===== */
 function renderPaperPrint() {
   const container = document.getElementById('paperPrintArea');
@@ -177,6 +200,33 @@ function renderPaperPrint() {
   `;
 }
 
+// Pull the real number of pages already uploaded today so the counters
+// don't reset to 0/N every time the pembina reopens the app.
+async function syncPaperUploadCounters() {
+  if (!currentEkstra) return;
+  try {
+    const { data, error } = await sb
+      .from('AttendanceProof')
+      .select('page')
+      .eq('ekstra', currentEkstra)
+      .eq('date', getJakartaDateString())
+      .eq('semester', currentSemester);
+    if (error) throw error;
+
+    const uploadedCount = (data || []).length;
+
+    ['paperUploadCounter', 'paperCameraUploadCounter'].forEach(id => {
+      const counterEl = document.getElementById(id);
+      if (!counterEl) return;
+      const total = parseInt(counterEl.textContent.split('/')[1]) || 1;
+      counterEl.textContent = uploadedCount + '/' + total;
+      counterEl.style.background = uploadedCount >= total ? 'var(--green)' : '';
+    });
+  } catch (e) {
+    // non-critical, counters just stay at their rendered default
+  }
+}
+
 function printPaper() {
   const sheet = document.getElementById('paperSheet');
   if (!sheet) return;
@@ -188,6 +238,7 @@ function printPaper() {
         <title>Cetak Absensi</title>
         <style>
           @page { size: A4; margin: 10mm; }
+          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
           body { font-family: Arial, sans-serif; color: #000; background: #fff; margin: 0; }
           .paper-sheet { width: 190mm; min-height: 277mm; position: relative; padding: 20mm; box-sizing: border-box; margin: 0 auto; }
           .paper-corner { position: absolute; width: 15mm; height: 15mm; background: #000; }
@@ -221,7 +272,6 @@ async function startPaperCamera() {
       video: { facingMode: paperCameraFacing, width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
     video.srcObject = paperVideoStream;
-    updateFlashlightButton();
     startExposureCheck();
   } catch (err) {
     showStatus('Tidak dapat mengakses kamera: ' + err.message, 'error');
@@ -241,46 +291,10 @@ async function switchPaperCamera() {
       video: { facingMode: paperCameraFacing, width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
     video.srcObject = paperVideoStream;
-    updateFlashlightButton();
   } catch (err) {
     // Revert on failure so next tap tries the other side again
     paperCameraFacing = paperCameraFacing === 'environment' ? 'user' : 'environment';
     showStatus('Gagal ganti kamera: ' + err.message, 'error');
-  }
-}
-/* ===== FLASHLIGHT ===== */
-let paperTorchOn = false;
-
-function updateFlashlightButton() {
-  const btn = document.getElementById('paperFlashlightBtn');
-  if (!btn) return;
-
-  if (!paperVideoStream) {
-    btn.style.display = 'none';
-    return;
-  }
-
-  // getCapabilities often doesn't report torch on mobile even when it works.
-  // Show the button on mobile devices and let togglePaperFlashlight() fail gracefully.
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  btn.style.display = isMobile ? 'flex' : 'none';
-  btn.textContent = paperTorchOn ? '🔦' : '🔅';
-  btn.title = paperTorchOn ? 'Matikan Flash' : 'Nyalakan Flash';
-}
-async function togglePaperFlashlight() {
-  if (!paperVideoStream) return;
-  const track = paperVideoStream.getVideoTracks()[0];
-  if (!track) return;
-
-  paperTorchOn = !paperTorchOn;
-  try {
-    await track.applyConstraints({ advanced: [{ torch: paperTorchOn }] });
-    updateFlashlightButton();
-    showStatus(paperTorchOn ? '🔦 Flash menyala' : '🔅 Flash mati', 'ok');
-  } catch (err) {
-    showStatus('Flash tidak didukung di kamera ini', 'error');
-    paperTorchOn = false;
-    updateFlashlightButton();
   }
 }
 /* ===== EXPOSURE CHECK ===== */
@@ -346,7 +360,6 @@ function stopPaperCamera() {
   }
   const video = document.getElementById('paperVideo');
   if (video) video.srcObject = null;
-  paperTorchOn = false;
   stopExposureCheck();
 }
 
@@ -389,20 +402,36 @@ function capturePaper() {
 
 function retakePaper() {
   paperCapturedImage = null;
-  const preview = document.getElementById('paperPreview');
-  if (preview) { preview.src = ''; preview.style.display = 'none'; }
   
-  const btnCap = document.getElementById('paperBtnCapture');
-  const btnRet = document.getElementById('paperBtnRetake');
-  const btnUpl = document.getElementById('paperBtnUpload');
-  const hint   = document.getElementById('paperCameraHint');
-  
-  if (btnCap) btnCap.style.display = 'inline-block';
-  if (btnRet) btnRet.style.display = 'none';
-  if (btnUpl) btnUpl.style.display = 'none';
-  if (hint)   hint.textContent = 'Arahkan kamera ke kertas. Pastikan 4 kotak hitam terlihat di sudut.';
+  if (paperSourceMode === 'camera') {
+    const preview = document.getElementById('paperPreview');
+    if (preview) { preview.src = ''; preview.style.display = 'none'; }
+    
+    const btnCap = document.getElementById('paperBtnCapture');
+    const btnRet = document.getElementById('paperBtnRetake');
+    const btnUpl = document.getElementById('paperBtnUpload');
+    const hint   = document.getElementById('paperCameraHint');
+    
+    if (btnCap) btnCap.style.display = 'inline-block';
+    if (btnRet) btnRet.style.display = 'none';
+    if (btnUpl) btnUpl.style.display = 'none';
+    if (hint)   hint.textContent     = 'Arahkan kamera ke kertas. Pastikan 4 kotak hitam terlihat di sudut.';
+  } else if (paperSourceMode === 'file') {
+    const previewWrap = document.getElementById('paperFilePreviewWrap');
+    const preview     = document.getElementById('paperFilePreview');
+    const dropzone    = document.getElementById('paperFileDropzone');
+    const controls    = document.getElementById('paperCameraControls');
+    const hint        = document.getElementById('paperCameraHint');
+    const fileInput   = document.getElementById('paperFileInput');
+    
+    if (preview)     preview.src = '';
+    if (previewWrap) previewWrap.style.display = 'none';
+    if (dropzone)    dropzone.style.display    = 'block';
+    if (controls)    controls.style.display    = 'none';
+    if (hint)        hint.textContent          = 'Pilih foto yang sudah ada di perangkat Anda.';
+    if (fileInput)   fileInput.value           = '';
+  }
 }
-
 /* ===== UPLOAD — Cloudinary direct browser upload ===== */
 async function uploadPaper() {
   if (!paperCapturedImage) return;
@@ -419,9 +448,9 @@ async function uploadPaper() {
 
   const requireCorners = cfg.omr_require_corners !== false;
 
-  if (requireCorners) {
+        if (requireCorners) {
     const cornersOk = await checkPaperCorners(paperCapturedImage);
-    if (cornersOk === false) {
+    if (!cornersOk) {   // reject on false, null, or undefined
       showStatus('❌ 4 sudut kertas wajib terlihat. Silakan foto ulang.', 'error');
       retakePaper();
       return;
@@ -467,32 +496,44 @@ async function uploadPaper() {
       throw new Error(data.error?.message || 'Upload gagal');
     }
     
-    // 4. Save the CDN URL to Supabase (only text, no image bytes)
+    // 4. Figure out the next page number for this ekstra/date/semester so a
+    //    2nd, 3rd, ... sheet doesn't overwrite the previous one.
     const dateStr = getJakartaDateString();
+    const { data: existingPages, error: pageErr } = await sb
+      .from('AttendanceProof')
+      .select('page')
+      .eq('ekstra', currentEkstra)
+      .eq('date', dateStr)
+      .eq('semester', currentSemester);
+    if (pageErr) throw pageErr;
+
+    const nextPage = (existingPages && existingPages.length)
+      ? Math.max(...existingPages.map(p => p.page || 1)) + 1
+      : 1;
+
+    // 5. Save the CDN URL to Supabase as its own page row (only text, no image bytes)
     const { error: dbErr } = await sb.from('AttendanceProof').upsert({
       ekstra: currentEkstra,
       date: dateStr,
       semester: currentSemester,
+      page: nextPage,
       photo_url: data.secure_url,   // <-- Cloudinary CDN link
       uploaded_by: currentOperator,
       note: ''
-    }, { onConflict: 'ekstra,date,semester' });
+    }, { onConflict: 'ekstra,date,semester,page' });
     
     if (dbErr) throw dbErr;
     
     showStatus('✓ Bukti absensi berhasil diupload', 'ok');
 
-    // Increment page counter
-        // Increment page counters (print tab + camera tab)
+    // Reflect the real DB count on the page counters (print tab + camera tab)
     ['paperUploadCounter', 'paperCameraUploadCounter'].forEach(id => {
       const counterEl = document.getElementById(id);
       if (counterEl) {
         const parts = counterEl.textContent.split('/');
-        const current = parseInt(parts[0]) || 0;
         const total = parseInt(parts[1]) || 1;
-        const next = current + 1;
-        counterEl.textContent = next + '/' + total;
-        if (next >= total) {
+        counterEl.textContent = nextPage + '/' + total;
+        if (nextPage >= total) {
           counterEl.style.background = 'var(--green)';
           showStatus('✓ Semua lembar sudah diupload!', 'ok');
         }
@@ -528,37 +569,67 @@ async function checkPaperCorners(imageDataUrl) {
 
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    canvas.width = img.width;
-    canvas.height = img.height;
-    ctx.drawImage(img, 0, 0);
 
-    const w = canvas.width, h = canvas.height;
+    // Downscale for speed & consistent detection
+    const maxDim = 800;
+    let w = img.width, h = img.height;
+    if (w > maxDim || h > maxDim) {
+      const scale = maxDim / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+
     const imgData = ctx.getImageData(0, 0, w, h).data;
 
-    const margin = Math.min(w, h) * 0.05;
-    const search = Math.min(w, h) * 0.18;
+    const margin = Math.min(w, h) * 0.03;
+    const search = Math.min(w, h) * 0.22;
+
     const quadrants = [
-      { x0: margin, y0: margin },
+      { x0: margin,              y0: margin },
       { x0: w - search - margin, y0: margin },
-      { x0: margin, y0: h - search - margin },
+      { x0: margin,              y0: h - search - margin },
       { x0: w - search - margin, y0: h - search - margin }
     ];
 
     let found = 0;
+
     for (const q of quadrants) {
-      let darkest = 255;
-      for (let y = q.y0; y < q.y0 + search; y += 6) {
-        for (let x = q.x0; x < q.x0 + search; x += 6) {
-          const idx = (Math.floor(y) * w + Math.floor(x)) * 4;
-          const b = (imgData[idx] + imgData[idx+1] + imgData[idx+2]) / 3;
-          if (b < darkest) darkest = b;
+      let cornerFound = false;
+      // The printed black square is roughly 15 mm ≈ a noticeable block.
+      // We scan with a block window and require low *average* brightness.
+      const block = Math.floor(search * 0.35); // window size
+      const step  = Math.max(6, Math.floor(block / 3));
+
+      for (let y = q.y0; y <= q.y0 + search - block && !cornerFound; y += step) {
+        for (let x = q.x0; x <= q.x0 + search - block && !cornerFound; x += step) {
+          let total = 0, count = 0;
+
+          for (let by = 0; by < block; by += 2) {
+            for (let bx = 0; bx < block; bx += 2) {
+              const px = Math.min(w - 1, Math.floor(x + bx));
+              const py = Math.min(h - 1, Math.floor(y + by));
+              const idx = (py * w + px) * 4;
+              total += (imgData[idx] + imgData[idx + 1] + imgData[idx + 2]) / 3;
+              count++;
+            }
+          }
+
+          if (count > 0 && (total / count) < 50) {
+            cornerFound = true; // solid black block detected
+          }
         }
       }
-      if (darkest < 60) found++;
+
+      if (cornerFound) found++;
     }
-    return found >= 3; // allow 1 corner to be obscured
+
+    return found >= 3;
   } catch (e) {
-    return null; // inconclusive
+    console.error('Corner check error:', e);
+    return false; // fail closed
   }
 }
 
@@ -566,4 +637,135 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
   return div.innerHTML;
+}
+/* ===== SOURCE SELECTOR ===== */
+function showPaperSourceSelect() {
+  const select   = document.getElementById('paperSourceSelect');
+  const camView  = document.getElementById('paperCameraView');
+  const fileView = document.getElementById('paperFileView');
+  const controls = document.getElementById('paperCameraControls');
+  const hint     = document.getElementById('paperCameraHint');
+  const camBtn   = document.getElementById('paperSourceCameraBtn');
+  
+  stopPaperCamera();
+  paperCapturedImage = null;
+  paperSourceMode    = null;
+
+  // Config disallows the in-app camera: skip the picker, go straight to file upload
+  if (!paperAllowAppCamera) {
+    selectPaperSource('file');
+    return;
+  }
+
+  if (camBtn)   camBtn.style.display   = '';
+  if (select)   select.style.display   = 'flex';
+  if (camView)  camView.style.display  = 'none';
+  if (fileView) fileView.style.display = 'none';
+  if (controls) controls.style.display = 'none';
+  if (hint)     hint.style.display     = 'none';
+}
+
+function selectPaperSource(mode) {
+  paperSourceMode = mode;
+  const select   = document.getElementById('paperSourceSelect');
+  const camView  = document.getElementById('paperCameraView');
+  const fileView = document.getElementById('paperFileView');
+  const controls = document.getElementById('paperCameraControls');
+  const hint     = document.getElementById('paperCameraHint');
+  
+  if (select) select.style.display = 'none';
+  
+  if (mode === 'camera') {
+    if (camView)  camView.style.display  = 'flex';
+    if (fileView) fileView.style.display = 'none';
+    if (controls) controls.style.display = 'flex';
+    if (hint) {
+      hint.style.display = 'block';
+      hint.textContent   = 'Arahkan kamera ke kertas. Pastikan 4 kotak hitam terlihat di sudut.';
+    }
+    
+    const btnCap = document.getElementById('paperBtnCapture');
+    const btnRet = document.getElementById('paperBtnRetake');
+    const btnUpl = document.getElementById('paperBtnUpload');
+    if (btnCap) btnCap.style.display = 'inline-block';
+    if (btnRet) btnRet.style.display = 'none';
+    if (btnUpl) btnUpl.style.display = 'none';
+    
+    startPaperCamera();
+  } else {
+    if (camView)  camView.style.display  = 'none';
+    if (fileView) fileView.style.display = 'flex';
+    if (controls) controls.style.display = 'none';
+    if (hint) {
+      hint.style.display = 'block';
+      hint.textContent   = 'Pilih foto yang sudah ada di perangkat Anda.';
+    }
+    stopPaperCamera();
+  }
+}
+
+async function handlePaperFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  if (!file.type.startsWith('image/')) {
+    showStatus('File harus berupa gambar (JPG/PNG)', 'error');
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    showStatus('Ukuran file maksimal 5MB', 'error');
+    return;
+  }
+  
+  showLoading(true);
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = e => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload  = () => resolve(i);
+      i.onerror = reject;
+      i.src = dataUrl;
+    });
+    
+    const maxW = 1200;
+    let w = img.width, h = img.height;
+    if (w > maxW) { h = Math.round((maxW / w) * h); w = maxW; }
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    paperCapturedImage = canvas.toDataURL('image/jpeg', 0.8);
+    
+    const previewWrap = document.getElementById('paperFilePreviewWrap');
+    const preview     = document.getElementById('paperFilePreview');
+    const dropzone    = document.getElementById('paperFileDropzone');
+    const hint        = document.getElementById('paperCameraHint');  // ← FIX
+    
+    if (preview)     preview.src = paperCapturedImage;
+    if (previewWrap) previewWrap.style.display = 'block';
+    if (dropzone)    dropzone.style.display    = 'none';
+    
+    const controls = document.getElementById('paperCameraControls');
+    const btnCap   = document.getElementById('paperBtnCapture');
+    const btnRet   = document.getElementById('paperBtnRetake');
+    const btnUpl   = document.getElementById('paperBtnUpload');
+    
+    if (controls) controls.style.display = 'flex';
+    if (btnCap)   btnCap.style.display   = 'none';
+    if (btnRet)   btnRet.style.display   = 'inline-block';
+    if (btnUpl)   btnUpl.style.display   = 'inline-block';
+    if (hint)     hint.textContent       = 'Review foto di atas. Jika jelas, tap Upload.';
+    
+    showStatus('Foto berhasil dimuat. Tap Upload untuk mengirim.', 'ok');
+  } catch (err) {
+    showStatus('Gagal memuat foto: ' + err.message, 'error');
+  } finally {
+    showLoading(false);
+  }
 }

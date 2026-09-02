@@ -1395,12 +1395,6 @@
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
 }
 
-#paperFlashlightBtn {
-  position: absolute;
-  top: 12px;
-  right: 60px;
-  z-index: 10;
-}
 /* ===== PRINT ABSENSI ===== */
 #printAbsensiScreen {
   display: none;
@@ -1491,8 +1485,8 @@
 }
 .print-corner.tl { top: 3mm; left: 3mm; }
 .print-corner.tr { top: 3mm; right: 3mm; }
-.print-corner.bl { bottom: 3mm; left: 3mm; }
-.print-corner.br { bottom: 3mm; right: 3mm; }
+.print-corner.bl { bottom: -20mm; left: 3mm; }
+.print-corner.br { bottom: -20mm; right: 3mm; }
 
 /* Paper header */
 .print-paper-header {
@@ -1650,21 +1644,70 @@ font-size: 12px;}
 
 /* Print media rules */
 @media print {
-  body * { visibility: hidden !important; }
-  .print-paper, .print-paper * { visibility: visible !important; }
-  .print-paper {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+
+  html, body {
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Hide everything by default. visibility (unlike display) can be
+     overridden by a visible descendant, so the print content below
+     still renders even though its ancestors match this rule too. */
+  body * {
+    visibility: hidden !important;
+    background: transparent !important;
+  }
+
+  #printAbsensiPreviewArea,
+  #printAbsensiPreviewArea * {
+    visibility: visible !important;
+  }
+
+  #printAbsensiPreviewArea {
     position: absolute;
     left: 0;
     top: 0;
-    margin: 0 auto;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  .print-paper {
+    position: relative;
+    margin: 0 auto 10mm;
     box-shadow: none;
-    width: 210mm;
-    min-height: 297mm;
+    width: 190mm;
+    min-height: 0;
+    height: auto;
     padding: 6mm;
+    background: #fff !important;
     page-break-after: always;
+    page-break-inside: avoid;
   }
   .print-paper:last-child {
     page-break-after: auto;
+  }
+
+  .print-paper * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  /* Re-assert the specific backgrounds that got neutralized above */
+  .print-corner {
+    background: #000 !important;
+  }
+  .print-main-table th {
+    background: #f0f0f0 !important;
+  }
+  .print-main-table tbody tr:nth-child(even) {
+    background: #f5f5f5 !important;
   }
 }
 
@@ -1718,10 +1761,6 @@ font-size: 12px;}
 /* ===== PAPER CAMERA ENHANCEMENTS ===== */
 #paperExposureBadge {
   z-index: 6;
-}
-
-#paperFlashlightBtn {
-  z-index: 10;
 }
 
 .paper-camera-wrap {
@@ -2066,6 +2105,23 @@ font-size: 12px;}
   color: var(--accent);
   text-align: center;
   border-top: 1px solid var(--border);
+}
+
+.admin-photo-page-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.admin-photo-page-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  min-width: 76px;
+  text-align: center;
 }
 
 @media (min-width: 880px) {
