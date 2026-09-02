@@ -479,16 +479,16 @@ async function selectWaReportDate(date) {
       .select('id, nama, kelas');
     if (studErr) throw studErr;
 
-    // 2. AttendanceV2 for selected date
-      const { data: attendance, error: attErr } = await sb
-    .from('AttendanceV2')
-    .select('student_id, status')
-    .eq('date', date)
-    .eq('semester', currentSemester);
+        // 2. AttendanceV2 for selected date
+    const { data: attendance, error: attErr } = await sb
+      .from('AttendanceV2')          // ← KEEP the V2! This is the table name.
+      .select('student_id, status')
+      .eq('date', date)
+      .eq('semester', currentSemester);
     if (attErr) throw attErr;
 
-        const attMap = {};
-    (attendance || []).forEach(a => {   // ← FIX: was AttendanceV2
+    const attMap = {};
+    (attendance || []).forEach(a => {   // ← lowercase `attendance` (the variable)
       attMap[a.student_id] = (a.status || '').trim().toUpperCase();
     });
 
