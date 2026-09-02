@@ -487,8 +487,8 @@ async function selectWaReportDate(date) {
     .eq('semester', currentSemester);
     if (attErr) throw attErr;
 
-    const attMap = {};
-    (Attendance || []).forEach(a => {
+        const attMap = {};
+    (attendance || []).forEach(a => {   // ← FIX: was AttendanceV2
       attMap[a.student_id] = (a.status || '').trim().toUpperCase();
     });
 
