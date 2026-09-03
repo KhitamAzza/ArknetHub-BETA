@@ -383,7 +383,8 @@ const CONFIG_DB_MAP = {
   maxPointSubmit: 'max_point_submit',
   maxRedemptionPoint: 'max_redemption_point',
   currentSemester: 'current_semester',
-  omrRequireCorners: 'omr_require_corners'
+  omrRequireCorners: 'omr_require_corners',
+  uploadBackend: 'upload_backend'
 };
 
 function initConfigMenu() {
@@ -421,6 +422,7 @@ async function loadConfigValues() {
   maxPointSubmit: data.max_point_submit,
   maxRedemptionPoint: data.max_redemption_point,
   currentSemester: data.current_semester || 'STS (Ganjil)',
+  uploadBackend: data.upload_backend || 'cloudinary',
   omrRequireCorners: data.omr_require_corners
 };
 
@@ -489,7 +491,13 @@ function renderConfigMenu() {
       items: [
         { key: "omrRequireCorners", label: "Peringati jika sudut kertas tidak terdeteksi", type: "toggle" }
       ]
-    }
+    },
+    {
+  title: "Layanan Upload Foto",
+  items: [
+    { key: "uploadBackend", label: "Backend Upload", type: "select", options: ["cloudinary", "discord"] }
+  ]
+}
   ];
 
   list.innerHTML = sections.map(section => {

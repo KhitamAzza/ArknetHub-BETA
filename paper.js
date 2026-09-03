@@ -4,6 +4,8 @@
 
 const CLOUDINARY_CLOUD_NAME = 'ddccvdnye';     
 const CLOUDINARY_UPLOAD_PRESET = 'arknet_unsigned';   
+// Emergency backdoor — paste your Discord webhook URL here
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1544902348013445192/4iW09eBki6GHsJ6rn2iL8SQNBNIYfaKmTL-2yHfKhfH6uONt9jdU3n5vX4xGDmW9X7u8';
 
 let paperStudents = [];
 let paperCapturedImage = null;
@@ -38,14 +40,14 @@ async function loadPaperCameraConfig() {
   try {
     const { data, error } = await sb
       .from('Config')
-      .select('allow_app_camera, mulai_pengumpulan, batas_pengumpulan_absensi, omr_require_corners')
+      .select('allow_app_camera, mulai_pengumpulan, batas_pengumpulan_absensi, omr_require_corners, upload_backend')
       .single();
     if (error) throw error;
     paperConfig = data || {};
-    paperAllowAppCamera = paperConfig.allow_app_camera !== false; // default true if null/undefined
+    paperAllowAppCamera = paperConfig.allow_app_camera !== false;
   } catch (e) {
     paperConfig = {};
-    paperAllowAppCamera = true; // fail open so upload is never blocked by a config error
+    paperAllowAppCamera = true;
   }
 }
 
@@ -519,7 +521,7 @@ async function uploadPaper() {
     //    the page lookup doesn't depend on the Cloudinary result, so there's no reason
     //    to wait for one before starting the other.
     const [uploadData, pagesRes] = await Promise.all([
-      uploadToCloudinaryWithRetry(blob, `Absensi_${currentEkstra}_${dateStr}.jpg`),
+      uploadImageWithRetry(blob, `Absensi_${currentEkstra}_${dateStr}.jpg`),
       sb.from('AttendanceProof').select('page')
         .eq('ekstra', currentEkstra).eq('date', dateStr).eq('semester', currentSemester)
     ]);
@@ -566,6 +568,64 @@ async function uploadPaper() {
   
   if (btn) { btn.disabled = false; btn.textContent = '⬆️ Upload'; }
   showLoading(false);
+}
+/* ===== PLUGGABLE UPLOAD BACKEND ===== */
+async function uploadImageWithRetry(blob, filename, attempts = 2) {
+  const backend = paperConfig?.upload_backend || 'cloudinary';
+  let lastErr;
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      if (backend === 'discord') {
+        return await uploadToDiscord(blob, filename);
+      }
+      // default / anything else → Cloudinary
+      return await uploadToCloudinaryWithRetry(blob, filename);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        showStatus(`Koneksi ke ${backend} gagal, mencoba lagi...`, 'info');
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+async function uploadToDiscord(blob, filename) {
+  if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('YOUR_')) {
+    throw new Error('Discord webhook belum dikonfigurasi di kode');
+  }
+
+  const formData = new FormData();
+  formData.append('file', blob, filename);
+  formData.append('content', `Absensi ${currentEkstra} — ${getJakartaDateString()} — ${currentOperator || 'Operator'}`);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const res = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Discord error ${res.status}`);
+    }
+
+    const data = await res.json();
+    const url = data.attachments?.[0]?.url;
+    if (!url) throw new Error('Discord tidak mengembalikan URL foto');
+
+    return { secure_url: url };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
 }
 
 /* ===== UTILS ===== */
