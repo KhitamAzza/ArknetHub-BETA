@@ -2124,6 +2124,57 @@ font-size: 12px;}
   text-align: center;
 }
 
+.admin-ekstra-chip-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+.admin-ekstra-chip-row::-webkit-scrollbar {
+  height: 4px;
+}
+.admin-ekstra-chip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.admin-ekstra-chip:active {
+  transform: scale(0.95);
+}
+.admin-ekstra-chip.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+}
+.admin-ekstra-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-secondary);
+  opacity: 0.4;
+}
+.admin-ekstra-chip-dot.uploaded {
+  background: var(--green);
+  opacity: 1;
+}
+.admin-ekstra-chip-dot.missing {
+  background: var(--red);
+  opacity: 1;
+}
+
 @media (min-width: 880px) {
   .admin-input-view-toggle {
     display: none !important;

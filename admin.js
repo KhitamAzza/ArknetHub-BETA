@@ -1365,6 +1365,8 @@ async function initAdminInput() {
     select.innerHTML = '<option value="">Pilih Ekskul</option>' +
       Array.from(ekstras).sort().map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
   }
+  renderAdminEkstraChips(Array.from(ekstras).sort());
+  loadAdminEkstraUploadStatus();
   adminInputStudents = [];
   adminInputChanges.clear();
   const list = document.getElementById('adminInputList');
@@ -1380,9 +1382,59 @@ async function initAdminInput() {
   loadAdminProofPhoto(null, null);
 }
 
+// ===== ADMIN INPUT: EKSTRA CHIP ROW (today's upload status at a glance) =====
+function renderAdminEkstraChips(ekstraList) {
+  const row = document.getElementById('adminEkstraChipRow');
+  if (!row) return;
+  row.innerHTML = ekstraList.map(e => `
+    <button type="button" class="admin-ekstra-chip" data-ekstra="${escapeHtml(e)}" onclick="selectAdminEkstraChip(this.dataset.ekstra)">
+      <span class="admin-ekstra-chip-dot"></span>
+      <span class="admin-ekstra-chip-label">${escapeHtml(e)}</span>
+    </button>
+  `).join('');
+}
+
+function selectAdminEkstraChip(ekstra) {
+  const select = document.getElementById('adminInputEkstra');
+  if (!select) return;
+  select.value = ekstra;
+  loadAdminInputList();
+}
+
+async function loadAdminEkstraUploadStatus() {
+  const today = todayJakartaDate();
+  try {
+    const { data, error } = await sb
+      .from('AttendanceProof')
+      .select('ekstra')
+      .eq('date', today)
+      .eq('semester', currentSemester);
+    if (error) throw error;
+    const uploaded = new Set((data || []).map(r => r.ekstra));
+    document.querySelectorAll('.admin-ekstra-chip').forEach(chip => {
+      markAdminEkstraChipStatus(chip.dataset.ekstra, uploaded.has(chip.dataset.ekstra));
+    });
+  } catch (e) {
+    // non-critical — chips just stay in the neutral "belum dicek" state
+  }
+}
+
+function markAdminEkstraChipStatus(ekstra, hasPhoto) {
+  document.querySelectorAll('.admin-ekstra-chip').forEach(chip => {
+    if (chip.dataset.ekstra !== ekstra) return;
+    const dot = chip.querySelector('.admin-ekstra-chip-dot');
+    if (!dot) return;
+    dot.classList.toggle('uploaded', hasPhoto);
+    dot.classList.toggle('missing', !hasPhoto);
+  });
+}
+
 async function loadAdminInputList() {
   const select = document.getElementById('adminInputEkstra');
   const ekstra = select ? select.value : "";
+  document.querySelectorAll('.admin-ekstra-chip').forEach(chip => {
+    chip.classList.toggle('active', chip.dataset.ekstra === ekstra);
+  });
   if (!ekstra) {
     loadAdminProofPhoto(null, null);
     return;
@@ -1841,6 +1893,7 @@ async function loadAdminProofPhoto(ekstra, date) {
 
   adminProofPhotos = proofs;
   adminProofPhotoIndex = 0;
+  if (date === todayJakartaDate()) markAdminEkstraChipStatus(ekstra, proofs.length > 0);
   updateAdminPhotoPageBar();
 
   if (!proofs.length) {
