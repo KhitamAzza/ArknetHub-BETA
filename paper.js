@@ -11,6 +11,7 @@ let paperVideoStream = null;
 let paperCameraFacing = 'environment';
 let paperSourceMode = null; // 'camera' | 'file'
 let paperAllowAppCamera = true; // from Config.allow_app_camera
+let paperConfig = {}; // cached Config row (mulai_pengumpulan, batas_pengumpulan_absensi, omr_require_corners, allow_app_camera)
 
 /* ===== SCREEN NAVIGATION ===== */
 function showPaperScreen() {
@@ -37,11 +38,13 @@ async function loadPaperCameraConfig() {
   try {
     const { data, error } = await sb
       .from('Config')
-      .select('allow_app_camera')
+      .select('allow_app_camera, mulai_pengumpulan, batas_pengumpulan_absensi, omr_require_corners')
       .single();
     if (error) throw error;
-    paperAllowAppCamera = data?.allow_app_camera !== false; // default true if null/undefined
+    paperConfig = data || {};
+    paperAllowAppCamera = paperConfig.allow_app_camera !== false; // default true if null/undefined
   } catch (e) {
+    paperConfig = {};
     paperAllowAppCamera = true; // fail open so upload is never blocked by a config error
   }
 }
@@ -433,19 +436,50 @@ function retakePaper() {
   }
 }
 /* ===== UPLOAD — Cloudinary direct browser upload ===== */
+// Wraps the actual network-heavy step (uploading the image bytes) with a
+// per-attempt timeout and one automatic retry, so a slow/flaky mobile
+// connection surfaces as a brief "trying again" instead of a hard failure.
+async function uploadToCloudinaryWithRetry(blob, filename, attempts = 2) {
+  const formData = new FormData();
+  formData.append('file', blob, filename);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  formData.append('folder', 'arknet_absensi');
+
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s per attempt
+    try {
+      const uploadRes = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+        { method: 'POST', body: formData, signal: controller.signal }
+      );
+      clearTimeout(timeoutId);
+      const data = await uploadRes.json();
+      if (!data.secure_url) throw new Error(data.error?.message || 'Upload gagal');
+      return data;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastErr = err;
+      if (i < attempts - 1) {
+        showStatus('Koneksi lambat, mencoba lagi...', 'info');
+        await new Promise(r => setTimeout(r, 800));
+      }
+    }
+  }
+  throw new Error(
+    lastErr?.name === 'AbortError'
+      ? 'Koneksi terlalu lambat, upload dibatalkan. Periksa sinyal internet dan coba lagi.'
+      : (lastErr?.message || 'Upload ke server gagal, periksa koneksi internet.')
+  );
+}
+
 async function uploadPaper() {
   if (!paperCapturedImage) return;
 
-  // 0. Check corner detection config
-  let cfg;
-  try {
-    const { data, error } = await sb
-      .from('Config')
-      .select('mulai_pengumpulan, batas_pengumpulan_absensi, omr_require_corners')
-      .single();
-    cfg = data || {};
-  } catch (e) { cfg = {}; }
-
+  // 0. Corner-detection config — read from the cache filled once at screen load,
+  //    instead of a fresh Config round trip on every single upload attempt.
+  const cfg = paperConfig || {};
   const requireCorners = cfg.omr_require_corners !== false;
 
         if (requireCorners) {
@@ -479,34 +513,19 @@ async function uploadPaper() {
     // 2. Convert base64 dataURL → Blob for multipart upload
     const fetchRes = await fetch(paperCapturedImage);
     const blob = await fetchRes.blob();
-    
-    const formData = new FormData();
-    formData.append('file', blob, `Absensi_${currentEkstra}_${getJakartaDateString()}.jpg`);
-    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-    formData.append('folder', 'arknet_absensi');
-    
-    // 3. Upload directly to Cloudinary (zero bandwidth through your server)
-    const uploadRes = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
-      { method: 'POST', body: formData }
-    );
-    
-    const data = await uploadRes.json();
-    if (!data.secure_url) {
-      throw new Error(data.error?.message || 'Upload gagal');
-    }
-    
-    // 4. Figure out the next page number for this ekstra/date/semester so a
-    //    2nd, 3rd, ... sheet doesn't overwrite the previous one.
     const dateStr = getJakartaDateString();
-    const { data: existingPages, error: pageErr } = await sb
-      .from('AttendanceProof')
-      .select('page')
-      .eq('ekstra', currentEkstra)
-      .eq('date', dateStr)
-      .eq('semester', currentSemester);
-    if (pageErr) throw pageErr;
 
+    // 3 & 4. Upload to Cloudinary and look up the next page number at the same time —
+    //    the page lookup doesn't depend on the Cloudinary result, so there's no reason
+    //    to wait for one before starting the other.
+    const [uploadData, pagesRes] = await Promise.all([
+      uploadToCloudinaryWithRetry(blob, `Absensi_${currentEkstra}_${dateStr}.jpg`),
+      sb.from('AttendanceProof').select('page')
+        .eq('ekstra', currentEkstra).eq('date', dateStr).eq('semester', currentSemester)
+    ]);
+
+    if (pagesRes.error) throw pagesRes.error;
+    const existingPages = pagesRes.data;
     const nextPage = (existingPages && existingPages.length)
       ? Math.max(...existingPages.map(p => p.page || 1)) + 1
       : 1;
@@ -517,7 +536,7 @@ async function uploadPaper() {
       date: dateStr,
       semester: currentSemester,
       page: nextPage,
-      photo_url: data.secure_url,   // <-- Cloudinary CDN link
+      photo_url: uploadData.secure_url,   // <-- Cloudinary CDN link
       uploaded_by: currentOperator,
       note: ''
     }, { onConflict: 'ekstra,date,semester,page' });
@@ -560,18 +579,17 @@ function decimalToTime(decimal) {
 /* ===== CORNER DETECTION (simple) ===== */
 async function checkPaperCorners(imageDataUrl) {
   try {
-    const img = await new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = rej;
-      i.src = imageDataUrl;
-    });
+    const img = await loadImageRobust(imageDataUrl);
 
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // willReadFrequently is for *repeated* reads on the same canvas — this
+    // function only calls getImageData once, so it would just force slower
+    // software rendering here for no benefit.
+    const ctx = canvas.getContext('2d');
 
-    // Downscale for speed & consistent detection
-    const maxDim = 800;
+    // Downscale for speed & consistent detection — the printed corner
+    // squares are large (~15mm), so a low-res pass is still plenty accurate.
+    const maxDim = 500;
     let w = img.width, h = img.height;
     if (w > maxDim || h > maxDim) {
       const scale = maxDim / Math.max(w, h);
@@ -637,6 +655,30 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
   return div.innerHTML;
+}
+
+// Loads a data URL into an <img>, retrying once before giving up. Decoding a
+// full-resolution phone photo (often 3000x4000+) can fail once under memory
+// pressure on weaker Android devices — a short pause + retry usually succeeds
+// where an immediate second attempt (or a bare `onerror` rejection) would not.
+function loadImageRobust(src, attempts = 2) {
+  return new Promise((resolve, reject) => {
+    let tries = 0;
+    function attempt() {
+      tries++;
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => {
+        if (tries < attempts) {
+          setTimeout(attempt, 200);
+        } else {
+          reject(new Error('Gagal memproses gambar (kemungkinan ukuran terlalu besar atau file rusak)'));
+        }
+      };
+      img.src = src;
+    }
+    attempt();
+  });
 }
 /* ===== SOURCE SELECTOR ===== */
 function showPaperSourceSelect() {
@@ -722,16 +764,11 @@ async function handlePaperFileSelect(event) {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload  = e => resolve(e.target.result);
-      reader.onerror = reject;
+      reader.onerror = () => reject(new Error('Gagal membaca file dari perangkat'));
       reader.readAsDataURL(file);
     });
     
-    const img = await new Promise((resolve, reject) => {
-      const i = new Image();
-      i.onload  = () => resolve(i);
-      i.onerror = reject;
-      i.src = dataUrl;
-    });
+    const img = await loadImageRobust(dataUrl);
     
     const maxW = 1200;
     let w = img.width, h = img.height;
